@@ -10,7 +10,8 @@ namespace AuthApi.Models
         public int Id { get; set; }
 
         [Required]
-        public string TokenHash { get; set; }
+        [MaxLength(512)]
+        public string TokenHash { get; set; } = string.Empty;
 
         [Required]
         public DateTime ExpiryTime { get; set; }
@@ -18,9 +19,9 @@ namespace AuthApi.Models
         public bool IsUsed { get; set; } = false;
 
         [Required]
-        public string UserId { get; set; }
+        public string UserId { get; set; } = string.Empty;
 
         [ForeignKey(nameof(UserId))]
-        public ApplicationUser User { get; set; }
+        public ApplicationUser? User { get; set; }
     }
 }

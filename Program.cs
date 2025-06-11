@@ -5,6 +5,7 @@ using AuthApi.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using AuthApi.Services; // ✅ Add your services namespace here
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +26,9 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddDefaultTokenProviders();
+
+// ✅ Add EmailService
+builder.Services.AddScoped<IEmailService, EmailService>(); // Make sure you have both the interface and implementation
 
 // ✅ Add JWT authentication
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -49,7 +53,7 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-// ✅ Add Authorization (missing line)
+// ✅ Add Authorization
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
@@ -63,7 +67,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// ✅ Middleware order matters
+// ✅ Middleware order
 app.UseAuthentication();
 app.UseAuthorization();
 

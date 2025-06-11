@@ -10,6 +10,7 @@ using System.Text;
 using AuthApi.Data;
 using AuthApi.Models;
 using Microsoft.IdentityModel.Tokens;
+using AuthApi.Services;
 
 namespace AuthApi.Controllers
 {
@@ -21,20 +22,22 @@ namespace AuthApi.Controllers
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IConfiguration _configuration;
         private readonly ApplicationDbContext _context;
+        private readonly IEmailService _emailService;
 
         public AuthController(
             UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager,
             IConfiguration configuration,
-            ApplicationDbContext context)
+            ApplicationDbContext context,
+            IEmailService emailService)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _configuration = configuration;
             _context = context;
+            _emailService = emailService;
         }
 
-        // ---------------- Register ----------------
         [HttpPost("register")]
         public async Task<IActionResult> Register(RegisterModel model)
         {
@@ -66,10 +69,54 @@ namespace AuthApi.Controllers
             }
 
             await _userManager.AddToRoleAsync(user, model.Role);
-            return Ok(new { Message = "User registered successfully." });
+
+            // ✅ Generate and send verification email
+            var token = GenerateEmailVerificationToken();
+            var tokenHash = HashToken(token);
+
+            var verification = new EmailVerificationToken
+            {
+                TokenHash = tokenHash,
+                ExpiryTime = DateTime.UtcNow.AddHours(24),
+                UserId = user.Id
+            };
+
+            _context.EmailVerificationTokens.Add(verification);
+            await _context.SaveChangesAsync();
+
+            await _emailService.SendVerificationEmail(user.Email, token);
+
+            return Ok(new { Message = "User registered successfully. Verification email sent." });
         }
 
-        // ---------------- Login ----------------
+
+        [HttpGet("verify-email")]
+public async Task<IActionResult> VerifyEmail([FromQuery] string token)
+{
+    if (string.IsNullOrEmpty(token))
+        return BadRequest("Token is required.");
+
+    var tokenHash = HashToken(token);
+
+    var verification = await _context.EmailVerificationTokens
+        .Include(t => t.User)
+        .FirstOrDefaultAsync(t => t.TokenHash == tokenHash && !t.IsUsed);
+
+    if (verification == null || verification.ExpiryTime < DateTime.UtcNow)
+        return BadRequest("Invalid or expired token.");
+
+    verification.IsUsed = true;
+
+    verification.User.EmailConfirmed = true; // Mark email as verified
+    _context.EmailVerificationTokens.Update(verification);
+    _context.Users.Update(verification.User);
+
+    await _context.SaveChangesAsync();
+
+    return Ok("Email verified successfully.");
+}
+
+
         [HttpPost("login")]
         public async Task<IActionResult> Login(LoginModel model)
         {
@@ -88,7 +135,7 @@ namespace AuthApi.Controllers
             var refreshEntity = new RefreshToken
             {
                 TokenHash = hashedToken,
-                ExpiryTime  = DateTime.UtcNow.AddDays(7),
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
                 UserId = user.Id
             };
 
@@ -102,7 +149,6 @@ namespace AuthApi.Controllers
             });
         }
 
-        // ---------------- Refresh Token ----------------
         [HttpPost("refresh-token")]
         public async Task<IActionResult> Refresh(TokenModel tokenModel)
         {
@@ -121,18 +167,16 @@ namespace AuthApi.Controllers
             var storedToken = await _context.RefreshTokens
                 .FirstOrDefaultAsync(rt => rt.UserId == user.Id && rt.TokenHash == hashedRefreshToken && !rt.IsRevoked);
 
-            if (storedToken == null || storedToken.ExpiryTime  <= DateTime.UtcNow)
+            if (storedToken == null || storedToken.ExpiryTime <= DateTime.UtcNow)
                 return BadRequest("Invalid or expired refresh token");
 
-            // Revoke old token
             storedToken.IsRevoked = true;
 
-            // Issue new one
             var newRefreshToken = GenerateRefreshToken();
             var newTokenEntry = new RefreshToken
             {
                 TokenHash = HashToken(newRefreshToken),
-                ExpiryTime  = DateTime.UtcNow.AddDays(7),
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
                 UserId = user.Id
             };
 
@@ -148,7 +192,6 @@ namespace AuthApi.Controllers
             });
         }
 
-        // ---------------- Logout ----------------
         [HttpPost("logout")]
         [Authorize]
         public async Task<IActionResult> Logout()
@@ -167,7 +210,7 @@ namespace AuthApi.Controllers
             return Ok(new { Message = "User logged out successfully." });
         }
 
-        // ---------------- Helpers ----------------
+        // 🔒 Helper Methods
         private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
         {
             var roles = await _userManager.GetRolesAsync(user);
@@ -201,6 +244,22 @@ namespace AuthApi.Controllers
             return Convert.ToBase64String(randomNumber);
         }
 
+        private string GenerateEmailVerificationToken()
+        {
+            var randomBytes = new byte[32];
+            using var rng = RandomNumberGenerator.Create();
+            rng.GetBytes(randomBytes);
+            return Convert.ToBase64String(randomBytes);
+        }
+
+        private string HashToken(string token)
+        {
+            using var sha256 = SHA256.Create();
+            var bytes = Encoding.UTF8.GetBytes(token);
+            var hash = sha256.ComputeHash(bytes);
+            return Convert.ToBase64String(hash);
+        }
+
         private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
         {
             var tokenValidationParameters = new TokenValidationParameters
@@ -221,18 +280,9 @@ namespace AuthApi.Controllers
 
             return principal;
         }
-
-        private string HashToken(string token)
-        {
-            using var sha256 = SHA256.Create();
-            var bytes = Encoding.UTF8.GetBytes(token);
-            var hash = sha256.ComputeHash(bytes);
-            return Convert.ToBase64String(hash);
-        }
     }
 
-    // ---------------- Models ----------------
-
+    // Models
     public class RegisterModel
     {
         [Required]

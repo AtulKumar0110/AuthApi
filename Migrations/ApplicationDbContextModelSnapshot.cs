@@ -41,6 +41,9 @@ namespace AuthApi.Migrations
                     b.Property<bool>("EmailConfirmed")
                         .HasColumnType("tinyint(1)");
 
+                    b.Property<bool>("IsEmailVerified")
+                        .HasColumnType("tinyint(1)");
+
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("tinyint(1)");
 
@@ -90,6 +93,36 @@ namespace AuthApi.Migrations
                         .HasDatabaseName("UserNameIndex");
 
                     b.ToTable("AspNetUsers", (string)null);
+                });
+
+            modelBuilder.Entity("AuthApi.Models.EmailVerificationToken", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("ExpiryTime")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<bool>("IsUsed")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("varchar(512)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("varchar(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("EmailVerificationTokens");
                 });
 
             modelBuilder.Entity("AuthApi.Models.RefreshToken", b =>
@@ -253,6 +286,17 @@ namespace AuthApi.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("AuthApi.Models.EmailVerificationToken", b =>
+                {
+                    b.HasOne("AuthApi.Models.ApplicationUser", "User")
+                        .WithMany("EmailVerificationTokens")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("AuthApi.Models.RefreshToken", b =>
                 {
                     b.HasOne("AuthApi.Models.ApplicationUser", "User")
@@ -317,6 +361,8 @@ namespace AuthApi.Migrations
 
             modelBuilder.Entity("AuthApi.Models.ApplicationUser", b =>
                 {
+                    b.Navigation("EmailVerificationTokens");
+
                     b.Navigation("RefreshTokens");
                 });
 #pragma warning restore 612, 618
