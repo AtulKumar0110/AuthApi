@@ -19,6 +19,9 @@ namespace AuthApi.Models
         // ✅ Future scalability: support multiple refresh tokens (multi-device)
         public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
 
+        public bool EmailConfirmed { get; set; }
+
+
         // ✅ Track email verification tokens
         public ICollection<EmailVerificationToken> EmailVerificationTokens { get; set; } = new List<EmailVerificationToken>();
     }

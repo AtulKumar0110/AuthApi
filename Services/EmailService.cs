@@ -1,16 +1,19 @@
 using System.Net;
 using System.Net.Mail;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace AuthApi.Services
 {
     public class EmailService : IEmailService
     {
         private readonly IConfiguration _configuration;
+        private readonly ILogger<EmailService> _logger;
 
-        public EmailService(IConfiguration configuration)
+        public EmailService(IConfiguration configuration, ILogger<EmailService> logger)
         {
             _configuration = configuration;
+            _logger = logger;
         }
 
         public async Task SendVerificationEmail(string email, string token)
@@ -23,20 +26,32 @@ namespace AuthApi.Services
 
             var verifyUrl = $"https://yourdomain.com/verify-email?token={Uri.EscapeDataString(token)}";
 
-            using var client = new SmtpClient(smtpHost, smtpPort)
+            try
             {
-                Credentials = new NetworkCredential(smtpUser, smtpPass),
-                EnableSsl = true
-            };
+                _logger.LogInformation("📤 Sending verification email to: {Email}", email);
 
-            var message = new MailMessage(fromAddress, email)
+                using var client = new SmtpClient(smtpHost, smtpPort)
+                {
+                    Credentials = new NetworkCredential(smtpUser, smtpPass),
+                    EnableSsl = true
+                };
+
+                var message = new MailMessage(fromAddress, email)
+                {
+                    Subject = "Verify your email",
+                    Body = $"Please verify your email by clicking this link:\n\n{verifyUrl}",
+                    IsBodyHtml = false
+                };
+
+                await client.SendMailAsync(message);
+
+                _logger.LogInformation("✅ Email sent successfully to: {Email}", email);
+            }
+            catch (Exception ex)
             {
-                Subject = "Verify your email",
-                Body = $"Please verify your email by clicking this link:\n\n{verifyUrl}",
-                IsBodyHtml = false
-            };
-
-            await client.SendMailAsync(message);
+                _logger.LogError(ex, "❌ Failed to send verification email to: {Email}", email);
+                throw; // Optional: rethrow to handle upstream
+            }
         }
     }
 }

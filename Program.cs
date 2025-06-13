@@ -5,16 +5,22 @@ using AuthApi.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
-using AuthApi.Services; // ✅ Add your services namespace here
+using AuthApi.Services;
+using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ✅ Enable console and debug logging (optional, for dev use)
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
 
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Register DbContext with MySQL
+// ✅ Register DbContext with MySQL
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseMySql(
         builder.Configuration.GetConnectionString("DefaultConnection"),
@@ -22,15 +28,15 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
     )
 );
 
-// Add Identity services
+// ✅ Add Identity services
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddDefaultTokenProviders();
 
-// ✅ Add EmailService
-builder.Services.AddScoped<IEmailService, EmailService>(); // Make sure you have both the interface and implementation
+// ✅ Register EmailService with ILogger support
+builder.Services.AddScoped<IEmailService, EmailService>();
 
-// ✅ Add JWT authentication
+// ✅ Add JWT Authentication
 var jwtKey = builder.Configuration["Jwt:Key"];
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 
@@ -58,7 +64,7 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline
+// ✅ Configure middleware
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -67,7 +73,6 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// ✅ Middleware order
 app.UseAuthentication();
 app.UseAuthorization();
 

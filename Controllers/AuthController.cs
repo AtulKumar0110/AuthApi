@@ -118,36 +118,41 @@ public async Task<IActionResult> VerifyEmail([FromQuery] string token)
 
 
         [HttpPost("login")]
-        public async Task<IActionResult> Login(LoginModel model)
-        {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
+     public async Task<IActionResult> Login(LoginModel model)
+{
+    if (!ModelState.IsValid)
+        return BadRequest(ModelState);
 
-            var user = await _userManager.FindByEmailAsync(model.Email);
-            if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
-                return Unauthorized("Invalid credentials.");
+    var user = await _userManager.FindByEmailAsync(model.Email);
+    if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
+        return Unauthorized("Invalid credentials.");
 
-            var authClaims = await GetClaimsAsync(user);
-            var accessToken = GenerateAccessToken(authClaims);
-            var refreshToken = GenerateRefreshToken();
-            var hashedToken = HashToken(refreshToken);
+    // ✅ Block login if email not confirmed
+    if (!user.EmailConfirmed)
+        return Unauthorized("Please verify your email before logging in.");
 
-            var refreshEntity = new RefreshToken
-            {
-                TokenHash = hashedToken,
-                ExpiryTime = DateTime.UtcNow.AddDays(7),
-                UserId = user.Id
-            };
+    var authClaims = await GetClaimsAsync(user);
+    var accessToken = GenerateAccessToken(authClaims);
+    var refreshToken = GenerateRefreshToken();
+    var hashedToken = HashToken(refreshToken);
 
-            _context.RefreshTokens.Add(refreshEntity);
-            await _context.SaveChangesAsync();
+    var refreshEntity = new RefreshToken
+    {
+        TokenHash = hashedToken,
+        ExpiryTime = DateTime.UtcNow.AddDays(7),
+        UserId = user.Id
+    };
 
-            return Ok(new TokenModel
-            {
-                AccessToken = accessToken,
-                RefreshToken = refreshToken
-            });
-        }
+    _context.RefreshTokens.Add(refreshEntity);
+    await _context.SaveChangesAsync();
+
+    return Ok(new TokenModel
+    {
+        AccessToken = accessToken,
+        RefreshToken = refreshToken
+    });
+}
+
 
         [HttpPost("refresh-token")]
         public async Task<IActionResult> Refresh(TokenModel tokenModel)
