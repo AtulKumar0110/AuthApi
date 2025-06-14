@@ -1,3 +1,4 @@
+// At top (unchanged)
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -70,8 +71,7 @@ namespace AuthApi.Controllers
 
             await _userManager.AddToRoleAsync(user, model.Role);
 
-            // ✅ Generate and send verification email
-            var token = GenerateEmailVerificationToken();
+            var token = GenerateSecureToken();
             var tokenHash = HashToken(token);
 
             var verification = new EmailVerificationToken
@@ -89,70 +89,90 @@ namespace AuthApi.Controllers
             return Ok(new { Message = "User registered successfully. Verification email sent." });
         }
 
+        [HttpPost("resend-verification")]
+        public async Task<IActionResult> ResendVerificationEmail([FromBody] ResendVerificationRequest model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+                return BadRequest("User not found.");
 
-        [HttpGet("verify-email")]
-public async Task<IActionResult> VerifyEmail([FromQuery] string token)
-{
-    if (string.IsNullOrEmpty(token))
-        return BadRequest("Token is required.");
+            if (user.EmailConfirmed)
+                return BadRequest("Email is already verified.");
 
-    var tokenHash = HashToken(token);
+            var token = GenerateSecureToken();
+            var hashedToken = HashToken(token);
 
-    var verification = await _context.EmailVerificationTokens
-        .Include(t => t.User)
-        .FirstOrDefaultAsync(t => t.TokenHash == tokenHash && !t.IsUsed);
+            var verification = new EmailVerificationToken
+            {
+                TokenHash = hashedToken,
+                ExpiryTime = DateTime.UtcNow.AddHours(24),
+                UserId = user.Id
+            };
 
-    if (verification == null || verification.ExpiryTime < DateTime.UtcNow)
-        return BadRequest("Invalid or expired token.");
+            _context.EmailVerificationTokens.Add(verification);
+            await _context.SaveChangesAsync();
 
-    verification.IsUsed = true;
+            await _emailService.SendVerificationEmail(user.Email, token);
 
-    verification.User.EmailConfirmed = true; // Mark email as verified
-    _context.EmailVerificationTokens.Update(verification);
-    _context.Users.Update(verification.User);
+            return Ok("Verification email resent.");
+        }
 
-    await _context.SaveChangesAsync();
+        [HttpPost("verify-email")]
+        public async Task<IActionResult> VerifyEmail([FromBody] VerifyEmailRequest model)
+        {
+            var hashedToken = HashToken(model.Token);
 
-    return Ok("Email verified successfully.");
-}
+            var verification = await _context.EmailVerificationTokens
+                .Include(v => v.User)
+                .FirstOrDefaultAsync(v => v.TokenHash == hashedToken && !v.User.EmailConfirmed);
 
+            if (verification == null)
+                return BadRequest("Invalid or expired verification token.");
+
+            if (verification.ExpiryTime < DateTime.UtcNow)
+                return BadRequest("Verification token has expired.");
+
+            verification.User.EmailConfirmed = true;
+            _context.EmailVerificationTokens.Remove(verification);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { Message = "Email verified successfully." });
+        }
 
         [HttpPost("login")]
-     public async Task<IActionResult> Login(LoginModel model)
-{
-    if (!ModelState.IsValid)
-        return BadRequest(ModelState);
+        public async Task<IActionResult> Login(LoginModel model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
 
-    var user = await _userManager.FindByEmailAsync(model.Email);
-    if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
-        return Unauthorized("Invalid credentials.");
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
+                return Unauthorized("Invalid credentials.");
 
-    // ✅ Block login if email not confirmed
-    if (!user.EmailConfirmed)
-        return Unauthorized("Please verify your email before logging in.");
+            if (!user.EmailConfirmed)
+                return Unauthorized("Please verify your email before logging in.");
 
-    var authClaims = await GetClaimsAsync(user);
-    var accessToken = GenerateAccessToken(authClaims);
-    var refreshToken = GenerateRefreshToken();
-    var hashedToken = HashToken(refreshToken);
+            var authClaims = await GetClaimsAsync(user);
+            var accessToken = GenerateAccessToken(authClaims);
+            var refreshToken = GenerateRefreshToken();
+            var hashedToken = HashToken(refreshToken);
 
-    var refreshEntity = new RefreshToken
-    {
-        TokenHash = hashedToken,
-        ExpiryTime = DateTime.UtcNow.AddDays(7),
-        UserId = user.Id
-    };
+            var refreshEntity = new RefreshToken
+            {
+                TokenHash = hashedToken,
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
+                UserId = user.Id
+            };
 
-    _context.RefreshTokens.Add(refreshEntity);
-    await _context.SaveChangesAsync();
+            _context.RefreshTokens.Add(refreshEntity);
+            await _context.SaveChangesAsync();
 
-    return Ok(new TokenModel
-    {
-        AccessToken = accessToken,
-        RefreshToken = refreshToken
-    });
-}
-
+            return Ok(new TokenModel
+            {
+                AccessToken = accessToken,
+                RefreshToken = refreshToken
+            });
+        }
 
         [HttpPost("refresh-token")]
         public async Task<IActionResult> Refresh(TokenModel tokenModel)
@@ -249,12 +269,12 @@ public async Task<IActionResult> VerifyEmail([FromQuery] string token)
             return Convert.ToBase64String(randomNumber);
         }
 
-        private string GenerateEmailVerificationToken()
+        private string GenerateSecureToken()
         {
-            var randomBytes = new byte[32];
+            var bytes = new byte[32];
             using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(randomBytes);
-            return Convert.ToBase64String(randomBytes);
+            rng.GetBytes(bytes);
+            return Convert.ToBase64String(bytes);
         }
 
         private string HashToken(string token)
@@ -316,5 +336,18 @@ public async Task<IActionResult> VerifyEmail([FromQuery] string token)
     {
         public string AccessToken { get; set; }
         public string RefreshToken { get; set; }
+    }
+
+    public class ResendVerificationRequest
+    {
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+    }
+
+    public class VerifyEmailRequest
+    {
+        [Required]
+        public string Token { get; set; }
     }
 }
