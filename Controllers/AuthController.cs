@@ -1,4 +1,3 @@
-// At top (unchanged)
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -12,6 +11,8 @@ using AuthApi.Data;
 using AuthApi.Models;
 using Microsoft.IdentityModel.Tokens;
 using AuthApi.Services;
+using AuthApi.Entities; // ✅ Add this line
+
 
 namespace AuthApi.Controllers
 {
@@ -235,6 +236,57 @@ namespace AuthApi.Controllers
             return Ok(new { Message = "User logged out successfully." });
         }
 
+        [HttpPost("request-password-reset")]
+        public async Task<IActionResult> RequestPasswordReset([FromBody] RequestPasswordResetModel model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null || !user.EmailConfirmed)
+                return Ok("If your email is registered and confirmed, a reset link has been sent.");
+
+            var token = GenerateSecureToken();
+            var hashedToken = HashToken(token);
+
+          var resetEntry = new PasswordResetToken
+            {
+                TokenHash = hashedToken,
+                ExpiryTime = DateTime.UtcNow.AddHours(1),
+                UserId = user.Id
+            };
+
+            _context.PasswordResetTokens.Add(resetEntry);
+            await _context.SaveChangesAsync();
+
+            await _emailService.SendPasswordResetEmail(user.Email, token);
+
+            return Ok("If your email is registered and confirmed, a reset link has been sent.");
+        }
+
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordModel model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+                return BadRequest("Invalid token or user.");
+
+            var hashedToken = HashToken(model.Token);
+            var tokenEntry = await _context.PasswordResetTokens
+                .FirstOrDefaultAsync(t => t.UserId == user.Id && t.TokenHash == hashedToken && !t.IsUsed && t.ExpiryTime > DateTime.UtcNow);
+
+            if (tokenEntry == null)
+                return BadRequest("Invalid or expired reset token.");
+
+            var resetToken = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var result = await _userManager.ResetPasswordAsync(user, resetToken, model.NewPassword);
+
+            if (!result.Succeeded)
+                return BadRequest(result.Errors.Select(e => e.Description));
+
+            tokenEntry.IsUsed = true;
+            await _context.SaveChangesAsync();
+
+            return Ok("Password has been reset successfully.");
+        }
+
         // 🔒 Helper Methods
         private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
         {
@@ -307,7 +359,7 @@ namespace AuthApi.Controllers
         }
     }
 
-    // Models
+    // 🔢 Models
     public class RegisterModel
     {
         [Required]
@@ -349,5 +401,26 @@ namespace AuthApi.Controllers
     {
         [Required]
         public string Token { get; set; }
+    }
+
+    public class RequestPasswordResetModel
+    {
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+    }
+
+    public class ResetPasswordModel
+    {
+        [Required]
+        public string Token { get; set; }
+
+        [Required]
+        [EmailAddress]
+        public string Email { get; set; }
+
+        [Required]
+        [MinLength(6)]
+        public string NewPassword { get; set; }
     }
 }

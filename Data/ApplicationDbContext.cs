@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using AuthApi.Models; // Reference to your Models
-
+using AuthApi.Entities; // ✅ Replace with actual namespace of PasswordResetToken
 namespace AuthApi.Data // Your actual namespace
 {
     public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
@@ -13,6 +13,8 @@ namespace AuthApi.Data // Your actual namespace
 
         public DbSet<RefreshToken> RefreshTokens { get; set; }
         public DbSet<EmailVerificationToken> EmailVerificationTokens { get; set; }
+        public DbSet<PasswordResetToken> PasswordResetTokens { get; set; }
+
 
 
         protected override void OnModelCreating(ModelBuilder builder)
