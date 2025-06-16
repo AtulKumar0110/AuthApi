@@ -17,6 +17,9 @@ namespace AuthApi.Models
 
         public bool IsRevoked { get; set; } = false;
 
+        [Required]
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
         // Navigation property
         [Required]
         public string UserId { get; set; }

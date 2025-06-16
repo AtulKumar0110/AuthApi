@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using System.ComponentModel.DataAnnotations;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -9,10 +10,8 @@ using System.Security.Cryptography;
 using System.Text;
 using AuthApi.Data;
 using AuthApi.Models;
-using Microsoft.IdentityModel.Tokens;
 using AuthApi.Services;
-using AuthApi.Entities; // ✅ Add this line
-
+using AuthApi.Entities;
 
 namespace AuthApi.Controllers
 {
@@ -40,6 +39,7 @@ namespace AuthApi.Controllers
             _emailService = emailService;
         }
 
+        // 🟢 Register
         [HttpPost("register")]
         public async Task<IActionResult> Register(RegisterModel model)
         {
@@ -52,9 +52,7 @@ namespace AuthApi.Controllers
 
             if (!await _roleManager.RoleExistsAsync(model.Role))
             {
-                var roleResult = await _roleManager.CreateAsync(new IdentityRole(model.Role));
-                if (!roleResult.Succeeded)
-                    return BadRequest("Failed to create role.");
+                await _roleManager.CreateAsync(new IdentityRole(model.Role));
             }
 
             var user = new ApplicationUser
@@ -63,109 +61,97 @@ namespace AuthApi.Controllers
                 Email = model.Email
             };
 
-            var createResult = await _userManager.CreateAsync(user, model.Password);
-            if (!createResult.Succeeded)
-            {
-                var errors = createResult.Errors.Select(e => e.Description);
-                return BadRequest(new { Errors = errors });
-            }
+            var result = await _userManager.CreateAsync(user, model.Password);
+            if (!result.Succeeded)
+                return BadRequest(result.Errors.Select(e => e.Description));
 
             await _userManager.AddToRoleAsync(user, model.Role);
 
             var token = GenerateSecureToken();
-            var tokenHash = HashToken(token);
+            var hashed = HashToken(token);
 
-            var verification = new EmailVerificationToken
+            _context.EmailVerificationTokens.Add(new EmailVerificationToken
             {
-                TokenHash = tokenHash,
+                TokenHash = hashed,
                 ExpiryTime = DateTime.UtcNow.AddHours(24),
                 UserId = user.Id
-            };
+            });
 
-            _context.EmailVerificationTokens.Add(verification);
             await _context.SaveChangesAsync();
-
             await _emailService.SendVerificationEmail(user.Email, token);
 
-            return Ok(new { Message = "User registered successfully. Verification email sent." });
+            return Ok("Registration successful. Please check your email to verify.");
         }
 
+        // 🟢 Resend Verification
         [HttpPost("resend-verification")]
         public async Task<IActionResult> ResendVerificationEmail([FromBody] ResendVerificationRequest model)
         {
             var user = await _userManager.FindByEmailAsync(model.Email);
-            if (user == null)
-                return BadRequest("User not found.");
-
-            if (user.EmailConfirmed)
-                return BadRequest("Email is already verified.");
+            if (user == null || user.EmailConfirmed)
+                return BadRequest("Invalid request.");
 
             var token = GenerateSecureToken();
-            var hashedToken = HashToken(token);
+            var hashed = HashToken(token);
 
-            var verification = new EmailVerificationToken
+            _context.EmailVerificationTokens.Add(new EmailVerificationToken
             {
-                TokenHash = hashedToken,
+                TokenHash = hashed,
                 ExpiryTime = DateTime.UtcNow.AddHours(24),
                 UserId = user.Id
-            };
+            });
 
-            _context.EmailVerificationTokens.Add(verification);
             await _context.SaveChangesAsync();
-
             await _emailService.SendVerificationEmail(user.Email, token);
 
             return Ok("Verification email resent.");
         }
 
+        // 🟢 Verify Email
         [HttpPost("verify-email")]
         public async Task<IActionResult> VerifyEmail([FromBody] VerifyEmailRequest model)
         {
-            var hashedToken = HashToken(model.Token);
-
+            var hash = HashToken(model.Token);
             var verification = await _context.EmailVerificationTokens
                 .Include(v => v.User)
-                .FirstOrDefaultAsync(v => v.TokenHash == hashedToken && !v.User.EmailConfirmed);
+                .FirstOrDefaultAsync(v => v.TokenHash == hash && !v.User.EmailConfirmed);
 
-            if (verification == null)
-                return BadRequest("Invalid or expired verification token.");
-
-            if (verification.ExpiryTime < DateTime.UtcNow)
-                return BadRequest("Verification token has expired.");
+            if (verification == null || verification.ExpiryTime < DateTime.UtcNow)
+                return BadRequest("Invalid or expired token.");
 
             verification.User.EmailConfirmed = true;
             _context.EmailVerificationTokens.Remove(verification);
             await _context.SaveChangesAsync();
 
-            return Ok(new { Message = "Email verified successfully." });
+            return Ok("Email verified successfully.");
         }
 
+        // 🟢 Login
         [HttpPost("login")]
         public async Task<IActionResult> Login(LoginModel model)
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
+            if (!ModelState.IsValid) return BadRequest(ModelState);
 
             var user = await _userManager.FindByEmailAsync(model.Email);
             if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
                 return Unauthorized("Invalid credentials.");
 
             if (!user.EmailConfirmed)
-                return Unauthorized("Please verify your email before logging in.");
+                return Unauthorized("Please verify your email first.");
 
-            var authClaims = await GetClaimsAsync(user);
-            var accessToken = GenerateAccessToken(authClaims);
+            var claims = await GetClaimsAsync(user);
+            var accessToken = GenerateAccessToken(claims);
             var refreshToken = GenerateRefreshToken();
-            var hashedToken = HashToken(refreshToken);
 
-            var refreshEntity = new RefreshToken
+            var hashed = HashToken(refreshToken);
+
+            _context.RefreshTokens.Add(new RefreshToken
             {
-                TokenHash = hashedToken,
+                TokenHash = hashed,
                 ExpiryTime = DateTime.UtcNow.AddDays(7),
                 UserId = user.Id
-            };
+            });
 
-            _context.RefreshTokens.Add(refreshEntity);
             await _context.SaveChangesAsync();
 
             return Ok(new TokenModel
@@ -175,105 +161,103 @@ namespace AuthApi.Controllers
             });
         }
 
+        // 🔁 Refresh Token
         [HttpPost("refresh-token")]
-        public async Task<IActionResult> Refresh(TokenModel tokenModel)
+        public async Task<IActionResult> Refresh([FromBody] TokenModel tokenModel)
         {
-            if (tokenModel is null)
-                return BadRequest("Invalid client request");
+            if (tokenModel is null || string.IsNullOrEmpty(tokenModel.RefreshToken))
+                return BadRequest("Missing refresh token.");
 
             var principal = GetPrincipalFromExpiredToken(tokenModel.AccessToken);
             var username = principal.Identity?.Name;
 
             var user = await _userManager.FindByNameAsync(username);
             if (user == null)
-                return Unauthorized("Invalid access");
+                return Unauthorized("Invalid token.");
 
-            var hashedRefreshToken = HashToken(tokenModel.RefreshToken);
+            var hashed = HashToken(tokenModel.RefreshToken);
 
-            var storedToken = await _context.RefreshTokens
-                .FirstOrDefaultAsync(rt => rt.UserId == user.Id && rt.TokenHash == hashedRefreshToken && !rt.IsRevoked);
+            var stored = await _context.RefreshTokens.FirstOrDefaultAsync(t =>
+                t.UserId == user.Id && t.TokenHash == hashed && !t.IsRevoked && t.ExpiryTime > DateTime.UtcNow);
 
-            if (storedToken == null || storedToken.ExpiryTime <= DateTime.UtcNow)
-                return BadRequest("Invalid or expired refresh token");
+            if (stored == null)
+                return Unauthorized("Invalid or expired refresh token.");
 
-            storedToken.IsRevoked = true;
+            stored.IsRevoked = true;
 
-            var newRefreshToken = GenerateRefreshToken();
-            var newTokenEntry = new RefreshToken
+            var newRefresh = GenerateRefreshToken();
+            var newHashed = HashToken(newRefresh);
+
+            _context.RefreshTokens.Add(new RefreshToken
             {
-                TokenHash = HashToken(newRefreshToken),
+                TokenHash = newHashed,
                 ExpiryTime = DateTime.UtcNow.AddDays(7),
                 UserId = user.Id
-            };
+            });
 
-            _context.RefreshTokens.Add(newTokenEntry);
             await _context.SaveChangesAsync();
-
-            var newAccessToken = GenerateAccessToken(principal.Claims.ToList());
 
             return Ok(new TokenModel
             {
-                AccessToken = newAccessToken,
-                RefreshToken = newRefreshToken
+                AccessToken = GenerateAccessToken(principal.Claims.ToList()),
+                RefreshToken = newRefresh
             });
         }
 
+        // 🚪 Logout
         [HttpPost("logout")]
         [Authorize]
         public async Task<IActionResult> Logout()
         {
-            var user = await _userManager.FindByNameAsync(User.Identity?.Name);
-            if (user == null)
-                return Unauthorized("User not found.");
+            var user = await _userManager.FindByNameAsync(User.Identity.Name);
+            if (user == null) return Unauthorized();
 
-            var tokens = _context.RefreshTokens.Where(rt => rt.UserId == user.Id && !rt.IsRevoked);
-            foreach (var token in tokens)
-            {
-                token.IsRevoked = true;
-            }
+            var tokens = _context.RefreshTokens
+                .Where(t => t.UserId == user.Id && !t.IsRevoked);
+            foreach (var t in tokens)
+                t.IsRevoked = true;
 
             await _context.SaveChangesAsync();
-            return Ok(new { Message = "User logged out successfully." });
+            return Ok("Logged out successfully.");
         }
 
+        // 🔐 Request Password Reset
         [HttpPost("request-password-reset")]
         public async Task<IActionResult> RequestPasswordReset([FromBody] RequestPasswordResetModel model)
         {
             var user = await _userManager.FindByEmailAsync(model.Email);
             if (user == null || !user.EmailConfirmed)
-                return Ok("If your email is registered and confirmed, a reset link has been sent.");
+                return Ok("If registered, a reset link has been sent.");
 
             var token = GenerateSecureToken();
-            var hashedToken = HashToken(token);
+            var hashed = HashToken(token);
 
-          var resetEntry = new PasswordResetToken
+            _context.PasswordResetTokens.Add(new PasswordResetToken
             {
-                TokenHash = hashedToken,
+                TokenHash = hashed,
                 ExpiryTime = DateTime.UtcNow.AddHours(1),
                 UserId = user.Id
-            };
+            });
 
-            _context.PasswordResetTokens.Add(resetEntry);
             await _context.SaveChangesAsync();
-
             await _emailService.SendPasswordResetEmail(user.Email, token);
 
-            return Ok("If your email is registered and confirmed, a reset link has been sent.");
+            return Ok("If registered, a reset link has been sent.");
         }
 
+        // 🔐 Reset Password
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordModel model)
         {
             var user = await _userManager.FindByEmailAsync(model.Email);
-            if (user == null)
-                return BadRequest("Invalid token or user.");
+            if (user == null) return BadRequest("Invalid user or token.");
 
-            var hashedToken = HashToken(model.Token);
+            var hash = HashToken(model.Token);
             var tokenEntry = await _context.PasswordResetTokens
-                .FirstOrDefaultAsync(t => t.UserId == user.Id && t.TokenHash == hashedToken && !t.IsUsed && t.ExpiryTime > DateTime.UtcNow);
+                .FirstOrDefaultAsync(t => t.UserId == user.Id && t.TokenHash == hash && !t.IsUsed && t.ExpiryTime > DateTime.UtcNow);
 
             if (tokenEntry == null)
-                return BadRequest("Invalid or expired reset token.");
+                return BadRequest("Invalid or expired token.");
 
             var resetToken = await _userManager.GeneratePasswordResetTokenAsync(user);
             var result = await _userManager.ResetPasswordAsync(user, resetToken, model.NewPassword);
@@ -284,16 +268,17 @@ namespace AuthApi.Controllers
             tokenEntry.IsUsed = true;
             await _context.SaveChangesAsync();
 
-            return Ok("Password has been reset successfully.");
+            return Ok("Password reset successful.");
         }
 
-        // 🔒 Helper Methods
+        // 🔧 Helpers
         private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
         {
             var roles = await _userManager.GetRolesAsync(user);
             var claims = new List<Claim>
             {
                 new Claim(ClaimTypes.Name, user.UserName),
+                new Claim(ClaimTypes.NameIdentifier, user.Id),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             };
             claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
@@ -303,22 +288,25 @@ namespace AuthApi.Controllers
         private string GenerateAccessToken(List<Claim> claims)
         {
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
             var token = new JwtSecurityToken(
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Issuer"],
-                expires: DateTime.UtcNow.AddMinutes(15),
                 claims: claims,
-                signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256)
+                expires: DateTime.UtcNow.AddMinutes(15),
+                signingCredentials: creds
             );
+
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
 
         private string GenerateRefreshToken()
         {
-            var randomNumber = new byte[32];
+            var random = new byte[32];
             using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(randomNumber);
-            return Convert.ToBase64String(randomNumber);
+            rng.GetBytes(random);
+            return Convert.ToBase64String(random);
         }
 
         private string GenerateSecureToken()
@@ -332,56 +320,43 @@ namespace AuthApi.Controllers
         private string HashToken(string token)
         {
             using var sha256 = SHA256.Create();
-            var bytes = Encoding.UTF8.GetBytes(token);
-            var hash = sha256.ComputeHash(bytes);
+            var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(token));
             return Convert.ToBase64String(hash);
         }
 
         private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
         {
-            var tokenValidationParameters = new TokenValidationParameters
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var validationParams = new TokenValidationParameters
             {
                 ValidateAudience = false,
                 ValidateIssuer = false,
+                ValidateLifetime = false,
                 ValidateIssuerSigningKey = true,
-                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"])),
-                ValidateLifetime = false
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]))
             };
 
-            var tokenHandler = new JwtSecurityTokenHandler();
-            var principal = tokenHandler.ValidateToken(token, tokenValidationParameters, out var securityToken);
-
-            if (securityToken is not JwtSecurityToken jwtToken ||
-                !jwtToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.InvariantCultureIgnoreCase))
+            var principal = tokenHandler.ValidateToken(token, validationParams, out var securityToken);
+            if (securityToken is not JwtSecurityToken jwt || !jwt.Header.Alg.Equals(SecurityAlgorithms.HmacSha256))
                 throw new SecurityTokenException("Invalid token");
 
             return principal;
         }
     }
 
-    // 🔢 Models
+    // ✅ DTOs
+
     public class RegisterModel
     {
-        [Required]
-        [EmailAddress]
-        public string Email { get; set; }
-
-        [Required]
-        [MinLength(6)]
-        public string Password { get; set; }
-
-        [Required]
-        public string Role { get; set; }
+        [Required, EmailAddress] public string Email { get; set; }
+        [Required, MinLength(6)] public string Password { get; set; }
+        [Required] public string Role { get; set; }
     }
 
     public class LoginModel
     {
-        [Required]
-        [EmailAddress]
-        public string Email { get; set; }
-
-        [Required]
-        public string Password { get; set; }
+        [Required, EmailAddress] public string Email { get; set; }
+        [Required] public string Password { get; set; }
     }
 
     public class TokenModel
@@ -392,35 +367,23 @@ namespace AuthApi.Controllers
 
     public class ResendVerificationRequest
     {
-        [Required]
-        [EmailAddress]
-        public string Email { get; set; }
+        [Required, EmailAddress] public string Email { get; set; }
     }
 
     public class VerifyEmailRequest
     {
-        [Required]
-        public string Token { get; set; }
+        [Required] public string Token { get; set; }
     }
 
     public class RequestPasswordResetModel
     {
-        [Required]
-        [EmailAddress]
-        public string Email { get; set; }
+        [Required, EmailAddress] public string Email { get; set; }
     }
 
     public class ResetPasswordModel
     {
-        [Required]
-        public string Token { get; set; }
-
-        [Required]
-        [EmailAddress]
-        public string Email { get; set; }
-
-        [Required]
-        [MinLength(6)]
-        public string NewPassword { get; set; }
+        [Required] public string Token { get; set; }
+        [Required, EmailAddress] public string Email { get; set; }
+        [Required, MinLength(6)] public string NewPassword { get; set; }
     }
 }

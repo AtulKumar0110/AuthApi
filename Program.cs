@@ -62,6 +62,9 @@ builder.Services.AddAuthentication(options =>
 // ✅ Add Authorization
 builder.Services.AddAuthorization();
 
+// ✅ Register Background Token Cleanup Service
+builder.Services.AddHostedService<TokenCleanupService>(); // <-- added this line
+
 var app = builder.Build();
 
 // ✅ Configure middleware
