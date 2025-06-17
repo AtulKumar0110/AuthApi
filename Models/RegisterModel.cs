@@ -7,7 +7,7 @@ namespace AuthApi.Models
         [Required]
         [EmailAddress]
         public string Email { get; set; }
-
+        public string PhoneNumber { get; set; }
         [Required]
         [MinLength(6, ErrorMessage = "Password must be at least 6 characters")]
         public string Password { get; set; }
