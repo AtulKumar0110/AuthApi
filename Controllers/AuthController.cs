@@ -24,20 +24,23 @@ namespace AuthApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
+         private readonly IConfiguration _config;
 
-        public AuthController(
-            UserManager<ApplicationUser> userManager,
-            RoleManager<IdentityRole> roleManager,
-            IConfiguration configuration,
-            ApplicationDbContext context,
-            IEmailService emailService)
-        {
-            _userManager = userManager;
-            _roleManager = roleManager;
-            _configuration = configuration;
-            _context = context;
-            _emailService = emailService;
-        }
+
+      public AuthController(
+    UserManager<ApplicationUser> userManager,
+    RoleManager<IdentityRole> roleManager,
+    IConfiguration config,
+    ApplicationDbContext context,
+    IEmailService emailService)
+    {
+    _userManager = userManager;
+    _roleManager = roleManager;
+    _config = config;
+    _context = context;
+    _emailService = emailService;
+    }
+
 
         // 🟢 Register
         [HttpPost("register")]
@@ -126,40 +129,46 @@ namespace AuthApi.Controllers
             return Ok("Email verified successfully.");
         }
 
-        // 🟢 Login
-        [HttpPost("login")]
-        public async Task<IActionResult> Login(LoginModel model)
-        {
-            if (!ModelState.IsValid) return BadRequest(ModelState);
+     // 🟢 Login
+[HttpPost("login")]
+public async Task<IActionResult> Login(LoginModel model)
+{
+    if (!ModelState.IsValid)
+        return BadRequest(ModelState);
 
-            var user = await _userManager.FindByEmailAsync(model.Email);
-            if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
-                return Unauthorized("Invalid credentials.");
+    // Lookup by email or phone
+    var user = await _userManager.Users
+        .FirstOrDefaultAsync(u => u.Email == model.Email || u.PhoneNumber == model.Email);
 
-            if (!user.EmailConfirmed)
-                return Unauthorized("Please verify your email first.");
+    if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
+        return Unauthorized("Invalid credentials.");
 
-            var claims = await GetClaimsAsync(user);
-            var accessToken = GenerateAccessToken(claims);
-            var refreshToken = GenerateRefreshToken();
+    // Optional: require verification
+    if (!user.EmailConfirmed && !user.PhoneVerified)
+        return Unauthorized("Please verify your email or phone first.");
 
-            var hashed = HashToken(refreshToken);
+    var claims = await GetClaimsAsync(user);
+    var accessToken = GenerateAccessToken(claims);
+    var refreshToken = GenerateRefreshToken();
 
-            _context.RefreshTokens.Add(new RefreshToken
-            {
-                TokenHash = hashed,
-                ExpiryTime = DateTime.UtcNow.AddDays(7),
-                UserId = user.Id
-            });
+    var hashed = HashToken(refreshToken);
 
-            await _context.SaveChangesAsync();
+    _context.RefreshTokens.Add(new RefreshToken
+    {
+        TokenHash = hashed,
+        ExpiryTime = DateTime.UtcNow.AddDays(7),
+        UserId = user.Id
+    });
 
-            return Ok(new TokenModel
-            {
-                AccessToken = accessToken,
-                RefreshToken = refreshToken
-            });
-        }
+    await _context.SaveChangesAsync();
+
+    return Ok(new TokenModel
+    {
+        AccessToken = accessToken,
+        RefreshToken = refreshToken
+    });
+}
+
 
         // 🔁 Refresh Token
         [HttpPost("refresh-token")]
@@ -245,6 +254,107 @@ namespace AuthApi.Controllers
             return Ok("If registered, a reset link has been sent.");
         }
 
+[HttpPost("send-phone-otp")]
+public async Task<IActionResult> SendPhoneOtp([FromBody] string userId)
+{
+    var user = await _userManager.FindByIdAsync(userId);
+    if (user == null || string.IsNullOrEmpty(user.PhoneNumber))
+        return BadRequest("User not found or phone number missing.");
+
+    var code = new Random().Next(100000, 999999).ToString();
+    var token = new PhoneVerificationToken
+    {
+        Code = code,
+        UserId = user.Id,
+        ExpiryTime = DateTime.UtcNow.AddMinutes(10)
+    };
+
+    _context.PhoneVerificationTokens.Add(token);
+    await _context.SaveChangesAsync();
+
+    // Simulate sending SMS
+    Console.WriteLine($"[SIMULATED SMS] OTP for {user.PhoneNumber}: {code}");
+
+    return Ok("OTP sent.");
+}
+
+[HttpPost("verify-phone-otp")]
+public async Task<IActionResult> VerifyPhoneOtp([FromBody] VerifyOtpRequest request)
+{
+    var token = await _context.PhoneVerificationTokens
+        .Where(t => t.UserId == request.UserId && t.Code == request.Code && !t.IsUsed && t.ExpiryTime > DateTime.UtcNow)
+        .OrderByDescending(t => t.ExpiryTime)
+        .FirstOrDefaultAsync();
+
+    if (token == null)
+        return BadRequest("Invalid or expired OTP.");
+
+    var user = await _userManager.FindByIdAsync(request.UserId);
+    if (user == null)
+        return NotFound("User not found.");
+
+    user.PhoneVerified = true;
+    token.IsUsed = true;
+
+    _context.PhoneVerificationTokens.Update(token);
+    await _userManager.UpdateAsync(user);
+    await _context.SaveChangesAsync();
+
+    return Ok("Phone verified successfully.");
+}
+
+        // private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
+        // {
+        //     var roles = await _userManager.GetRolesAsync(user);
+        //     var claims = new List<Claim>
+        //     {
+        //         new Claim(ClaimTypes.NameIdentifier, user.Id),
+        //         new Claim(ClaimTypes.Name, user.UserName),
+        //         new Claim(ClaimTypes.Email, user.Email ?? ""),
+        //         new Claim("PhoneVerified", user.PhoneVerified.ToString())
+        //     };
+
+        //     claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+        //     return claims;
+        // }
+
+
+private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
+{
+    var roles = await _userManager.GetRolesAsync(user);
+
+    var claims = new List<Claim>
+    {
+        new Claim(ClaimTypes.NameIdentifier, user.Id),
+        new Claim(ClaimTypes.Name, user.UserName),
+        new Claim(ClaimTypes.Email, user.Email ?? ""),
+        new Claim("PhoneVerified", user.PhoneVerified.ToString()),
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+    };
+
+    claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+
+    return claims;
+}
+
+
+        private string GenerateAccessToken(IEnumerable<Claim> claims)
+        {
+            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["Jwt:Issuer"],
+                audience: _configuration["Jwt:Audience"],
+                claims: claims,
+                expires: DateTime.UtcNow.AddMinutes(30),
+                signingCredentials: creds
+            );
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+
         // 🔐 Reset Password
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordModel model)
@@ -272,18 +382,18 @@ namespace AuthApi.Controllers
         }
 
         // 🔧 Helpers
-        private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
-        {
-            var roles = await _userManager.GetRolesAsync(user);
-            var claims = new List<Claim>
-            {
-                new Claim(ClaimTypes.Name, user.UserName),
-                new Claim(ClaimTypes.NameIdentifier, user.Id),
-                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-            };
-            claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
-            return claims;
-        }
+        // private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
+        // {
+        //     var roles = await _userManager.GetRolesAsync(user);
+        //     var claims = new List<Claim>
+        //     {
+        //         new Claim(ClaimTypes.Name, user.UserName),
+        //         new Claim(ClaimTypes.NameIdentifier, user.Id),
+        //         new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        //     };
+        //     claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+        //     return claims;
+        // }
 
         private string GenerateAccessToken(List<Claim> claims)
         {

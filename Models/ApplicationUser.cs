@@ -20,6 +20,7 @@ namespace AuthApi.Models
         public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
 
         public bool EmailConfirmed { get; set; }
+        public bool PhoneVerified { get; set; } = false;
 
 
         // ✅ Track email verification tokens
