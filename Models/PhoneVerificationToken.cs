@@ -9,6 +9,9 @@ namespace AuthApi.Models
         [Key]
         public int Id { get; set; }
 
+         [Required]
+         public string Token { get; set; } 
+
         [Required]
         public string Code { get; set; } // Example: 6-digit OTP like "123456"
 

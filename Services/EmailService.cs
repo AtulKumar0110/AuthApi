@@ -26,6 +26,13 @@ namespace AuthApi.Services
 
             await SendEmailAsync(email, subject, body);
         }
+        
+    public async Task SendAsync(string toEmail, string subject, string body)
+    {
+        // basic example using SmtpClient or any email provider
+        await Task.CompletedTask;
+        Console.WriteLine($"Email sent to {toEmail} with subject: {subject}, body: {body}");
+    }
 
         public async Task SendPasswordResetEmail(string toEmail, string token)
         {

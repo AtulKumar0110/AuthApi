@@ -13,7 +13,8 @@ using AuthApi.Models;
 using AuthApi.Services;
 using AuthApi.Entities;
 
-namespace AuthApi.Controllers
+
+namespace AuthApi.Controllers   
 {
     [ApiController]
     [Route("api/[controller]")]
@@ -43,72 +44,65 @@ namespace AuthApi.Controllers
 
 
         // 🟢 Register
-        [HttpPost("register")]
-        public async Task<IActionResult> Register(RegisterModel model)
-        {
-            if (!ModelState.IsValid)
+    [HttpPost("register")]
+public async Task<IActionResult> Register(RegisterModelFixed model)
+{
+    
+    if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            var existingUser = await _userManager.FindByEmailAsync(model.Email);
-            if (existingUser != null)
-                return BadRequest("User with this email already exists.");
+    var existingUser = await _userManager.FindByEmailAsync(model.Email);
+    if (existingUser != null)
+        return BadRequest("User with this email already exists.");
 
-            if (!await _roleManager.RoleExistsAsync(model.Role))
-            {
-                await _roleManager.CreateAsync(new IdentityRole(model.Role));
-            }
+    if (!await _roleManager.RoleExistsAsync(model.Role))
+        await _roleManager.CreateAsync(new IdentityRole(model.Role));
 
-            var user = new ApplicationUser
-            {
-                UserName = model.Email,
-                Email = model.Email
-            };
+    var user = new ApplicationUser
+    {
+        UserName = model.Email,
+        Email = model.Email,
+        PhoneNumber = model.PhoneNumber,
+        EmailConfirmed = false,
+        PhoneVerified = false
+    };
 
-            var result = await _userManager.CreateAsync(user, model.Password);
-            if (!result.Succeeded)
-                return BadRequest(result.Errors.Select(e => e.Description));
+    var result = await _userManager.CreateAsync(user, model.Password);
+    if (!result.Succeeded)
+        return BadRequest(result.Errors.Select(e => e.Description));
 
-            await _userManager.AddToRoleAsync(user, model.Role);
+    await _userManager.AddToRoleAsync(user, model.Role);
 
-            var token = GenerateSecureToken();
-            var hashed = HashToken(token);
+    // Generate and store email verification token
+    var emailToken = GenerateSecureToken();
+    var emailTokenHash = HashToken(emailToken);
 
-            _context.EmailVerificationTokens.Add(new EmailVerificationToken
-            {
-                TokenHash = hashed,
-                ExpiryTime = DateTime.UtcNow.AddHours(24),
-                UserId = user.Id
-            });
+    _context.EmailVerificationTokens.Add(new EmailVerificationToken
+    {
+        TokenHash = emailTokenHash,
+        ExpiryTime = DateTime.UtcNow.AddHours(24),
+        UserId = user.Id
+    });
 
-            await _context.SaveChangesAsync();
-            await _emailService.SendVerificationEmail(user.Email, token);
+    // Generate and store phone verification OTP
+    var phoneOtp = new Random().Next(100000, 999999).ToString();
 
-            return Ok("Registration successful. Please check your email to verify.");
-        }
+    _context.PhoneVerificationTokens.Add(new PhoneVerificationToken
+    {
+        Token = phoneOtp,
+        ExpiryTime = DateTime.UtcNow.AddMinutes(10),
+        UserId = user.Id
+    });
 
-        // 🟢 Resend Verification
-        [HttpPost("resend-verification")]
-        public async Task<IActionResult> ResendVerificationEmail([FromBody] ResendVerificationRequest model)
-        {
-            var user = await _userManager.FindByEmailAsync(model.Email);
-            if (user == null || user.EmailConfirmed)
-                return BadRequest("Invalid request.");
+    await _context.SaveChangesAsync();
 
-            var token = GenerateSecureToken();
-            var hashed = HashToken(token);
+    // Send verification emails/SMS
+    await _emailService.SendVerificationEmail(user.Email, emailToken);
+    await _emailService.SendAsync(user.Email, "Phone Verification OTP", $"Your OTP is: {phoneOtp}");
 
-            _context.EmailVerificationTokens.Add(new EmailVerificationToken
-            {
-                TokenHash = hashed,
-                ExpiryTime = DateTime.UtcNow.AddHours(24),
-                UserId = user.Id
-            });
+    return Ok("Registration successful. Check your email and SMS to verify.");
+}
 
-            await _context.SaveChangesAsync();
-            await _emailService.SendVerificationEmail(user.Email, token);
-
-            return Ok("Verification email resent.");
-        }
 
         // 🟢 Verify Email
         [HttpPost("verify-email")]
