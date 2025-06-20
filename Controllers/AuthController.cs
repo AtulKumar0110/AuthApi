@@ -14,7 +14,7 @@ using AuthApi.Services;
 using AuthApi.Entities;
 
 
-namespace AuthApi.Controllers   
+namespace AuthApi.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
@@ -25,143 +25,230 @@ namespace AuthApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly ApplicationDbContext _context;
         private readonly IEmailService _emailService;
-         private readonly IConfiguration _config;
+        private readonly IConfiguration _config;
 
 
-      public AuthController(
-    UserManager<ApplicationUser> userManager,
-    RoleManager<IdentityRole> roleManager,
-    IConfiguration config,
-    ApplicationDbContext context,
-    IEmailService emailService)
-    {
-    _userManager = userManager;
-    _roleManager = roleManager;
-    _config = config;
-    _context = context;
-    _emailService = emailService;
-    }
+        public AuthController(
+      UserManager<ApplicationUser> userManager,
+      RoleManager<IdentityRole> roleManager,
+      IConfiguration config,
+      ApplicationDbContext context,
+      IEmailService emailService)
+        {
+            _userManager = userManager;
+            _roleManager = roleManager;
+            _config = config;
+            _context = context;
+            _emailService = emailService;
+        }
 
 
         // 🟢 Register
-    [HttpPost("register")]
-public async Task<IActionResult> Register(RegisterModelFixed model)
-{
-    
-    if (!ModelState.IsValid)
+        [HttpPost("register")]
+        public async Task<IActionResult> Register(RegisterModelFixed model)
+        {
+
+            if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-    var existingUser = await _userManager.FindByEmailAsync(model.Email);
-    if (existingUser != null)
-        return BadRequest("User with this email already exists.");
+            var existingUser = await _userManager.FindByEmailAsync(model.Email);
+            if (existingUser != null)
+                return BadRequest("User with this email already exists.");
 
-    if (!await _roleManager.RoleExistsAsync(model.Role))
-        await _roleManager.CreateAsync(new IdentityRole(model.Role));
+            if (!await _roleManager.RoleExistsAsync(model.Role))
+                await _roleManager.CreateAsync(new IdentityRole(model.Role));
 
-    var user = new ApplicationUser
-    {
-        UserName = model.Email,
-        Email = model.Email,
-        PhoneNumber = model.PhoneNumber,
-        EmailConfirmed = false,
-        PhoneVerified = false
-    };
+            var user = new ApplicationUser
+            {
+                UserName = model.Email,
+                Email = model.Email,
+                PhoneNumber = model.PhoneNumber,
+                EmailConfirmed = false,
+                PhoneVerified = false
+            };
 
-    var result = await _userManager.CreateAsync(user, model.Password);
-    if (!result.Succeeded)
-        return BadRequest(result.Errors.Select(e => e.Description));
+            var result = await _userManager.CreateAsync(user, model.Password);
+            if (!result.Succeeded)
+                return BadRequest(result.Errors.Select(e => e.Description));
 
-    await _userManager.AddToRoleAsync(user, model.Role);
+            await _userManager.AddToRoleAsync(user, model.Role);
 
-    // Generate and store email verification token
-    var emailToken = GenerateSecureToken();
-    var emailTokenHash = HashToken(emailToken);
+            // Generate and store email verification token
+            var emailToken = GenerateSecureToken();
+            var emailTokenHash = HashToken(emailToken);
 
-    _context.EmailVerificationTokens.Add(new EmailVerificationToken
-    {
-        TokenHash = emailTokenHash,
-        ExpiryTime = DateTime.UtcNow.AddHours(24),
-        UserId = user.Id
-    });
+            _context.EmailVerificationTokens.Add(new EmailVerificationToken
+            {
+                TokenHash = emailTokenHash,
+                ExpiryTime = DateTime.UtcNow.AddHours(24),
+                UserId = user.Id
+            });
 
-    // Generate and store phone verification OTP
-    var phoneOtp = new Random().Next(100000, 999999).ToString();
+            // Generate and store phone verification OTP
+            var phoneOtp = new Random().Next(100000, 999999).ToString();
 
-    _context.PhoneVerificationTokens.Add(new PhoneVerificationToken
-    {
-        Token = phoneOtp,
-        ExpiryTime = DateTime.UtcNow.AddMinutes(10),
-        UserId = user.Id
-    });
+            _context.PhoneVerificationTokens.Add(new PhoneVerificationToken
+            {
+                Token = phoneOtp,
+                ExpiryTime = DateTime.UtcNow.AddMinutes(10),
+                UserId = user.Id
+            });
 
-    await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync();
 
-    // Send verification emails/SMS
-    await _emailService.SendVerificationEmail(user.Email, emailToken);
-    await _emailService.SendAsync(user.Email, "Phone Verification OTP", $"Your OTP is: {phoneOtp}");
+            // Send verification emails/SMS
+            await _emailService.SendVerificationEmail(user.Email, emailToken);
+            await _emailService.SendAsync(user.Email, "Phone Verification OTP", $"Your OTP is: {phoneOtp}");
 
-    return Ok("Registration successful. Check your email and SMS to verify.");
-}
+            return Ok("Registration successful. Check your email and SMS to verify.");
+        }
 
 
         // 🟢 Verify Email
         [HttpPost("verify-email")]
         public async Task<IActionResult> VerifyEmail([FromBody] VerifyEmailRequest model)
         {
-            var hash = HashToken(model.Token);
+            if (string.IsNullOrWhiteSpace(model.Token))
+                return BadRequest("Token is required.");
+
+            var tokenHash = HashToken(model.Token);
+
             var verification = await _context.EmailVerificationTokens
                 .Include(v => v.User)
-                .FirstOrDefaultAsync(v => v.TokenHash == hash && !v.User.EmailConfirmed);
+                .FirstOrDefaultAsync(v =>
+                    v.TokenHash == tokenHash &&
+                    !v.User.EmailConfirmed &&
+                    v.ExpiryTime > DateTime.UtcNow);
 
-            if (verification == null || verification.ExpiryTime < DateTime.UtcNow)
+            if (verification == null)
                 return BadRequest("Invalid or expired token.");
 
-            verification.User.EmailConfirmed = true;
+            var user = verification.User;
+            user.EmailConfirmed = true;
+
             _context.EmailVerificationTokens.Remove(verification);
+
             await _context.SaveChangesAsync();
+
+            // Optional: Log or send confirmation message
+            // _logger.LogInformation($"User {user.Email} email verified.");
 
             return Ok("Email verified successfully.");
         }
 
-     // 🟢 Login
-[HttpPost("login")]
-public async Task<IActionResult> Login(LoginModel model)
-{
-    if (!ModelState.IsValid)
-        return BadRequest(ModelState);
 
-    // Lookup by email or phone
-    var user = await _userManager.Users
-        .FirstOrDefaultAsync(u => u.Email == model.Email || u.PhoneNumber == model.Email);
+        // 🟢 Verify Phone
+        [HttpPost("verify-phone")]
+        public async Task<IActionResult> VerifyPhone([FromBody] VerifyPhoneRequest model)
+        {
+            if (string.IsNullOrWhiteSpace(model.Otp))
+                return BadRequest("OTP is required.");
 
-    if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
-        return Unauthorized("Invalid credentials.");
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+                return BadRequest("User not found.");
 
-    // Optional: require verification
-    if (!user.EmailConfirmed && !user.PhoneVerified)
-        return Unauthorized("Please verify your email or phone first.");
+            var verification = await _context.PhoneVerificationTokens
+                .FirstOrDefaultAsync(p =>
+                    p.UserId == user.Id &&
+                    p.Token == model.Otp &&
+                    p.ExpiryTime > DateTime.UtcNow);
 
-    var claims = await GetClaimsAsync(user);
-    var accessToken = GenerateAccessToken(claims);
-    var refreshToken = GenerateRefreshToken();
+            if (verification == null)
+                return BadRequest("Invalid or expired OTP.");
 
-    var hashed = HashToken(refreshToken);
+            user.PhoneVerified = true;
 
-    _context.RefreshTokens.Add(new RefreshToken
-    {
-        TokenHash = hashed,
-        ExpiryTime = DateTime.UtcNow.AddDays(7),
-        UserId = user.Id
-    });
+            _context.PhoneVerificationTokens.Remove(verification);
+            await _userManager.UpdateAsync(user); // 🟢 Save PhoneVerified flag to DB
+            await _context.SaveChangesAsync();
 
-    await _context.SaveChangesAsync();
+            return Ok("Phone number verified successfully.");
+        }
 
-    return Ok(new TokenModel
-    {
-        AccessToken = accessToken,
-        RefreshToken = refreshToken
-    });
-}
+
+
+        // 🟢 Login
+        [HttpPost("login")]
+        public async Task<IActionResult> Login([FromBody] LoginRequest model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            // Try to find user by email or phone number
+            var user = await _userManager.Users
+                .FirstOrDefaultAsync(u =>
+                    u.Email == model.EmailOrPhone || u.PhoneNumber == model.EmailOrPhone);
+
+            if (user == null || !await _userManager.CheckPasswordAsync(user, model.Password))
+                return Unauthorized("Invalid email/phone or password.");
+
+            if (!user.EmailConfirmed)
+                return Unauthorized("Please verify your email.");
+
+            if (!user.PhoneVerified)
+                return Unauthorized("Please verify your phone number.");
+
+            var claims = await GetClaimsAsync(user);
+            var accessToken = GenerateAccessToken(claims);
+            var refreshToken = GenerateRefreshToken();
+            var hashedRefreshToken = HashToken(refreshToken);
+
+            _context.RefreshTokens.Add(new RefreshToken
+            {
+                TokenHash = hashedRefreshToken,
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
+                UserId = user.Id
+            });
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new TokenModel
+            {
+                AccessToken = accessToken,
+                RefreshToken = refreshToken
+            });
+        }
+
+        [HttpPost("refresh-token")]
+        public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest model)
+        {
+            if (string.IsNullOrEmpty(model.RefreshToken))
+                return BadRequest("Refresh token is required.");
+
+            var hashedToken = HashToken(model.RefreshToken);
+            var tokenEntity = await _context.RefreshTokens
+                .Include(t => t.User)
+                .FirstOrDefaultAsync(t =>
+                    t.TokenHash == hashedToken &&
+                    t.ExpiryTime > DateTime.UtcNow);
+
+            if (tokenEntity == null)
+                return Unauthorized("Invalid or expired refresh token.");
+
+            var user = tokenEntity.User;
+            var newAccessToken = GenerateAccessToken(await GetClaimsAsync(user));
+            var newRefreshToken = GenerateRefreshToken();
+            var newRefreshTokenHash = HashToken(newRefreshToken);
+
+            // Store new refresh token and remove the old one
+            _context.RefreshTokens.Remove(tokenEntity);
+            _context.RefreshTokens.Add(new RefreshToken
+            {
+                TokenHash = newRefreshTokenHash,
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
+                UserId = user.Id
+            });
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new TokenModel
+            {
+                AccessToken = newAccessToken,
+                RefreshToken = newRefreshToken
+            });
+        }
+
 
 
         // 🔁 Refresh Token
@@ -248,54 +335,54 @@ public async Task<IActionResult> Login(LoginModel model)
             return Ok("If registered, a reset link has been sent.");
         }
 
-[HttpPost("send-phone-otp")]
-public async Task<IActionResult> SendPhoneOtp([FromBody] string userId)
-{
-    var user = await _userManager.FindByIdAsync(userId);
-    if (user == null || string.IsNullOrEmpty(user.PhoneNumber))
-        return BadRequest("User not found or phone number missing.");
+        [HttpPost("send-phone-otp")]
+        public async Task<IActionResult> SendPhoneOtp([FromBody] string userId)
+        {
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null || string.IsNullOrEmpty(user.PhoneNumber))
+                return BadRequest("User not found or phone number missing.");
 
-    var code = new Random().Next(100000, 999999).ToString();
-    var token = new PhoneVerificationToken
-    {
-        Code = code,
-        UserId = user.Id,
-        ExpiryTime = DateTime.UtcNow.AddMinutes(10)
-    };
+            var code = new Random().Next(100000, 999999).ToString();
+            var token = new PhoneVerificationToken
+            {
+                Code = code,
+                UserId = user.Id,
+                ExpiryTime = DateTime.UtcNow.AddMinutes(10)
+            };
 
-    _context.PhoneVerificationTokens.Add(token);
-    await _context.SaveChangesAsync();
+            _context.PhoneVerificationTokens.Add(token);
+            await _context.SaveChangesAsync();
 
-    // Simulate sending SMS
-    Console.WriteLine($"[SIMULATED SMS] OTP for {user.PhoneNumber}: {code}");
+            // Simulate sending SMS
+            Console.WriteLine($"[SIMULATED SMS] OTP for {user.PhoneNumber}: {code}");
 
-    return Ok("OTP sent.");
-}
+            return Ok("OTP sent.");
+        }
 
-[HttpPost("verify-phone-otp")]
-public async Task<IActionResult> VerifyPhoneOtp([FromBody] VerifyOtpRequest request)
-{
-    var token = await _context.PhoneVerificationTokens
-        .Where(t => t.UserId == request.UserId && t.Code == request.Code && !t.IsUsed && t.ExpiryTime > DateTime.UtcNow)
-        .OrderByDescending(t => t.ExpiryTime)
-        .FirstOrDefaultAsync();
+        [HttpPost("verify-phone-otp")]
+        public async Task<IActionResult> VerifyPhoneOtp([FromBody] VerifyOtpRequest request)
+        {
+            var token = await _context.PhoneVerificationTokens
+                .Where(t => t.UserId == request.UserId && t.Code == request.Code && !t.IsUsed && t.ExpiryTime > DateTime.UtcNow)
+                .OrderByDescending(t => t.ExpiryTime)
+                .FirstOrDefaultAsync();
 
-    if (token == null)
-        return BadRequest("Invalid or expired OTP.");
+            if (token == null)
+                return BadRequest("Invalid or expired OTP.");
 
-    var user = await _userManager.FindByIdAsync(request.UserId);
-    if (user == null)
-        return NotFound("User not found.");
+            var user = await _userManager.FindByIdAsync(request.UserId);
+            if (user == null)
+                return NotFound("User not found.");
 
-    user.PhoneVerified = true;
-    token.IsUsed = true;
+            user.PhoneVerified = true;
+            token.IsUsed = true;
 
-    _context.PhoneVerificationTokens.Update(token);
-    await _userManager.UpdateAsync(user);
-    await _context.SaveChangesAsync();
+            _context.PhoneVerificationTokens.Update(token);
+            await _userManager.UpdateAsync(user);
+            await _context.SaveChangesAsync();
 
-    return Ok("Phone verified successfully.");
-}
+            return Ok("Phone verified successfully.");
+        }
 
         // private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
         // {
@@ -313,11 +400,11 @@ public async Task<IActionResult> VerifyPhoneOtp([FromBody] VerifyOtpRequest requ
         // }
 
 
-private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
-{
-    var roles = await _userManager.GetRolesAsync(user);
+        private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
+        {
+            var roles = await _userManager.GetRolesAsync(user);
 
-    var claims = new List<Claim>
+            var claims = new List<Claim>
     {
         new Claim(ClaimTypes.NameIdentifier, user.Id),
         new Claim(ClaimTypes.Name, user.UserName),
@@ -326,10 +413,10 @@ private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
         new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
     };
 
-    claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+            claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
-    return claims;
-}
+            return claims;
+        }
 
 
         private string GenerateAccessToken(IEnumerable<Claim> claims)
