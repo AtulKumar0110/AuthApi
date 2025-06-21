@@ -43,6 +43,7 @@ namespace AuthApi.Controllers
         }
 
 
+
         // 🟢 Register
         [HttpPost("register")]
         public async Task<IActionResult> Register(RegisterModelFixed model)
@@ -210,44 +211,44 @@ namespace AuthApi.Controllers
             });
         }
 
-        [HttpPost("refresh-token")]
-        public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest model)
-        {
-            if (string.IsNullOrEmpty(model.RefreshToken))
-                return BadRequest("Refresh token is required.");
+        // [HttpPost("refresh-token")]
+        // public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest model)
+        // {
+        //     if (string.IsNullOrEmpty(model.RefreshToken))
+        //         return BadRequest("Refresh token is required.");
 
-            var hashedToken = HashToken(model.RefreshToken);
-            var tokenEntity = await _context.RefreshTokens
-                .Include(t => t.User)
-                .FirstOrDefaultAsync(t =>
-                    t.TokenHash == hashedToken &&
-                    t.ExpiryTime > DateTime.UtcNow);
+        //     var hashedToken = HashToken(model.RefreshToken);
+        //     var tokenEntity = await _context.RefreshTokens
+        //         .Include(t => t.User)
+        //         .FirstOrDefaultAsync(t =>
+        //             t.TokenHash == hashedToken &&
+        //             t.ExpiryTime > DateTime.UtcNow);
 
-            if (tokenEntity == null)
-                return Unauthorized("Invalid or expired refresh token.");
+        //     if (tokenEntity == null)
+        //         return Unauthorized("Invalid or expired refresh token.");
 
-            var user = tokenEntity.User;
-            var newAccessToken = GenerateAccessToken(await GetClaimsAsync(user));
-            var newRefreshToken = GenerateRefreshToken();
-            var newRefreshTokenHash = HashToken(newRefreshToken);
+        //     var user = tokenEntity.User;
+        //     var newAccessToken = GenerateAccessToken(await GetClaimsAsync(user));
+        //     var newRefreshToken = GenerateRefreshToken();
+        //     var newRefreshTokenHash = HashToken(newRefreshToken);
 
-            // Store new refresh token and remove the old one
-            _context.RefreshTokens.Remove(tokenEntity);
-            _context.RefreshTokens.Add(new RefreshToken
-            {
-                TokenHash = newRefreshTokenHash,
-                ExpiryTime = DateTime.UtcNow.AddDays(7),
-                UserId = user.Id
-            });
+        //     // Store new refresh token and remove the old one
+        //     _context.RefreshTokens.Remove(tokenEntity);
+        //     _context.RefreshTokens.Add(new RefreshToken
+        //     {
+        //         TokenHash = newRefreshTokenHash,
+        //         ExpiryTime = DateTime.UtcNow.AddDays(7),
+        //         UserId = user.Id
+        //     });
 
-            await _context.SaveChangesAsync();
+        //     await _context.SaveChangesAsync();
 
-            return Ok(new TokenModel
-            {
-                AccessToken = newAccessToken,
-                RefreshToken = newRefreshToken
-            });
-        }
+        //     return Ok(new TokenModel
+        //     {
+        //         AccessToken = newAccessToken,
+        //         RefreshToken = newRefreshToken
+        //     });
+        // }
 
 
 
@@ -461,6 +462,96 @@ namespace AuthApi.Controllers
 
             return Ok("Password reset successful.");
         }
+[HttpPost("forgot-password")]
+public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest model)
+{
+    var user = await _userManager.FindByEmailAsync(model.Email);
+    if (user == null)
+        return Ok("If an account exists, a password reset link will be sent."); // Prevent enumeration
+
+    var token = GenerateSecureToken();
+    var tokenHash = HashToken(token);
+
+    _context.PasswordResetTokens.Add(new PasswordResetToken
+    {
+        TokenHash = tokenHash,
+        ExpiryTime = DateTime.UtcNow.AddHours(1),
+        UserId = user.Id
+    });
+
+    await _context.SaveChangesAsync();
+    await _emailService.SendAsync(user.Email, "Password Reset", $"Your reset token: {token}");
+
+    return Ok("Password reset link sent.");
+}
+
+[HttpPost("reset-password")]
+public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest model)
+{
+    var tokenHash = HashToken(model.Token);
+    var resetEntry = await _context.PasswordResetTokens
+        .Include(r => r.User)
+        .FirstOrDefaultAsync(r => r.TokenHash == tokenHash && r.ExpiryTime > DateTime.UtcNow);
+
+    if (resetEntry == null)
+        return BadRequest("Invalid or expired token.");
+
+    var user = resetEntry.User;
+    var result = await _userManager.RemovePasswordAsync(user);
+    if (!result.Succeeded)
+        return BadRequest("Failed to remove old password.");
+
+    result = await _userManager.AddPasswordAsync(user, model.NewPassword);
+    if (!result.Succeeded)
+        return BadRequest("Failed to set new password.");
+
+    _context.PasswordResetTokens.Remove(resetEntry);
+    await _context.SaveChangesAsync();
+
+    return Ok("Password has been reset.");
+}
+
+
+
+        [HttpPost("refresh-token")]
+        public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var hashedToken = HashToken(model.RefreshToken);
+            var refreshToken = await _context.RefreshTokens
+                .Include(rt => rt.User)
+                .FirstOrDefaultAsync(rt => rt.TokenHash == hashedToken && rt.ExpiryTime > DateTime.UtcNow);
+
+            if (refreshToken == null)
+                return Unauthorized("Invalid or expired refresh token.");
+
+            var user = refreshToken.User;
+            var claims = await GetClaimsAsync(user);
+            var newAccessToken = GenerateAccessToken(claims);
+            var newRefreshToken = GenerateRefreshToken();
+            var newHashedRefreshToken = HashToken(newRefreshToken);
+
+            // Remove old token, add new one
+            _context.RefreshTokens.Remove(refreshToken);
+            _context.RefreshTokens.Add(new RefreshToken
+            {
+                TokenHash = newHashedRefreshToken,
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
+                UserId = user.Id
+            });
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new TokenModel
+            {
+                AccessToken = newAccessToken,
+                RefreshToken = newRefreshToken
+            });
+        }
+
+
 
         // 🔧 Helpers
         // private async Task<List<Claim>> GetClaimsAsync(ApplicationUser user)
@@ -494,19 +585,29 @@ namespace AuthApi.Controllers
 
         private string GenerateRefreshToken()
         {
-            var random = new byte[32];
+            var randomBytes = new byte[64];
             using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(random);
-            return Convert.ToBase64String(random);
+            rng.GetBytes(randomBytes);
+            return Convert.ToBase64String(randomBytes);
         }
 
+
+
+        // private string GenerateSecureToken()
+        // {
+        //     var bytes = new byte[32];
+        //     using var rng = RandomNumberGenerator.Create();
+        //     rng.GetBytes(bytes);
+        //     return Convert.ToBase64String(bytes);
+        // }
         private string GenerateSecureToken()
-        {
-            var bytes = new byte[32];
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(bytes);
-            return Convert.ToBase64String(bytes);
-        }
+{
+    var bytes = new byte[64];
+    using var rng = RandomNumberGenerator.Create();
+    rng.GetBytes(bytes);
+    return Convert.ToBase64String(bytes);
+}
+
 
         private string HashToken(string token)
         {
@@ -514,6 +615,8 @@ namespace AuthApi.Controllers
             var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(token));
             return Convert.ToBase64String(hash);
         }
+
+
 
         private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
         {

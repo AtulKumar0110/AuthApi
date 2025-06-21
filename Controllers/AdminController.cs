@@ -11,7 +11,7 @@ namespace AuthApi.Controllers
         [HttpGet("users")]
         public IActionResult GetAllUsers()
         {
-            return Ok("All users data for Admin");
+            return Ok("Only Admins can see this");
         }
     }
 }
