@@ -15,6 +15,7 @@ namespace AuthApi.Data // Your actual namespace
         public DbSet<EmailVerificationToken> EmailVerificationTokens { get; set; }
         public DbSet<PasswordResetToken> PasswordResetTokens { get; set; }
         public DbSet<PhoneVerificationToken> PhoneVerificationTokens { get; set; }
+        public DbSet<OtpEntry> OtpEntries { get; set; }
 
       
 

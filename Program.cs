@@ -5,7 +5,7 @@ using AuthApi.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
-using AuthApi.Services;
+using AuthApi.Services; // ✅ For EmailService & SmsService
 using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -36,6 +36,9 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
 // ✅ Register EmailService with ILogger support
 builder.Services.AddScoped<IEmailService, EmailService>();
 
+// ✅ Register SmsService
+builder.Services.AddScoped<ISmsService, SmsService>(); // <-- 📌 ADD THIS LINE
+
 // ✅ Add JWT Authentication
 var jwtKey = builder.Configuration["Jwt:Key"];
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
@@ -63,7 +66,7 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddAuthorization();
 
 // ✅ Register Background Token Cleanup Service
-builder.Services.AddHostedService<TokenCleanupService>(); // <-- added this line
+builder.Services.AddHostedService<TokenCleanupService>();
 
 var app = builder.Build();
 

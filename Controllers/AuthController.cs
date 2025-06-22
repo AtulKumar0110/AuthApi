@@ -27,19 +27,22 @@ namespace AuthApi.Controllers
         private readonly IEmailService _emailService;
         private readonly IConfiguration _config;
 
+        private readonly ISmsService _smsService;
 
         public AuthController(
       UserManager<ApplicationUser> userManager,
       RoleManager<IdentityRole> roleManager,
       IConfiguration config,
       ApplicationDbContext context,
-      IEmailService emailService)
+      IEmailService emailService,
+      ISmsService smsService)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _config = config;
             _context = context;
             _emailService = emailService;
+            _smsService = smsService;
         }
 
 
@@ -167,6 +170,33 @@ namespace AuthApi.Controllers
             return Ok("Phone number verified successfully.");
         }
 
+        [HttpPost("send-otp")]
+        public async Task<IActionResult> SendOtp([FromBody] SendOtpRequest model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var user = await _userManager.Users
+                .FirstOrDefaultAsync(u => u.PhoneNumber == model.PhoneNumber);
+
+            if (user == null)
+                return BadRequest("User not found.");
+
+            var otp = GenerateOtp();
+
+            // Optionally store hashed OTP in DB for verification later
+            // var hashedOtp = HashToken(otp);
+
+            await _smsService.SendAsync(user.PhoneNumber, $"Your OTP is: {otp}");
+
+            return Ok("OTP sent successfully.");
+        }
+
+        private string GenerateOtp()
+        {
+            var random = new Random();
+            return random.Next(100000, 999999).ToString(); // Generates a 6-digit OTP
+        }
 
 
         // 🟢 Login
@@ -360,6 +390,33 @@ namespace AuthApi.Controllers
             return Ok("OTP sent.");
         }
 
+
+        [HttpPost("verify-phone-otp")]
+        public async Task<IActionResult> VerifyPhoneOtp([FromBody] VerifyPhoneOtpRequest model)
+        {
+            var otpHash = HashToken(model.Otp);
+
+            var entry = await _context.OtpEntries
+                .FirstOrDefaultAsync(o => o.PhoneNumber == model.PhoneNumber && o.OtpHash == otpHash && !o.IsUsed && o.ExpiryTime > DateTime.UtcNow);
+
+            if (entry == null)
+                return BadRequest("Invalid or expired OTP.");
+
+            var user = await _userManager.Users.FirstOrDefaultAsync(u => u.PhoneNumber == model.PhoneNumber);
+            if (user == null)
+                return BadRequest("User not found.");
+
+            user.PhoneVerified = true;
+            entry.IsUsed = true;
+
+            await _userManager.UpdateAsync(user);
+            await _context.SaveChangesAsync();
+
+            return Ok("Phone number verified successfully.");
+        }
+
+
+
         [HttpPost("verify-phone-otp")]
         public async Task<IActionResult> VerifyPhoneOtp([FromBody] VerifyOtpRequest request)
         {
@@ -462,55 +519,107 @@ namespace AuthApi.Controllers
 
             return Ok("Password reset successful.");
         }
-[HttpPost("forgot-password")]
-public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest model)
-{
-    var user = await _userManager.FindByEmailAsync(model.Email);
-    if (user == null)
-        return Ok("If an account exists, a password reset link will be sent."); // Prevent enumeration
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+                return Ok("If an account exists, a password reset link will be sent."); // Prevent enumeration
 
-    var token = GenerateSecureToken();
-    var tokenHash = HashToken(token);
+            var token = GenerateSecureToken();
+            var tokenHash = HashToken(token);
 
-    _context.PasswordResetTokens.Add(new PasswordResetToken
-    {
-        TokenHash = tokenHash,
-        ExpiryTime = DateTime.UtcNow.AddHours(1),
-        UserId = user.Id
-    });
+            _context.PasswordResetTokens.Add(new PasswordResetToken
+            {
+                TokenHash = tokenHash,
+                ExpiryTime = DateTime.UtcNow.AddHours(1),
+                UserId = user.Id
+            });
 
-    await _context.SaveChangesAsync();
-    await _emailService.SendAsync(user.Email, "Password Reset", $"Your reset token: {token}");
+            await _context.SaveChangesAsync();
+            await _emailService.SendAsync(user.Email, "Password Reset", $"Your reset token: {token}");
 
-    return Ok("Password reset link sent.");
-}
+            return Ok("Password reset link sent.");
+        }
 
-[HttpPost("reset-password")]
-public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest model)
-{
-    var tokenHash = HashToken(model.Token);
-    var resetEntry = await _context.PasswordResetTokens
-        .Include(r => r.User)
-        .FirstOrDefaultAsync(r => r.TokenHash == tokenHash && r.ExpiryTime > DateTime.UtcNow);
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest model)
+        {
+            var tokenHash = HashToken(model.Token);
+            var resetEntry = await _context.PasswordResetTokens
+                .Include(r => r.User)
+                .FirstOrDefaultAsync(r =>
+                    r.TokenHash == tokenHash &&
+                    r.ExpiryTime > DateTime.UtcNow &&
+                    !r.IsUsed);
 
-    if (resetEntry == null)
-        return BadRequest("Invalid or expired token.");
+            if (resetEntry == null)
+                return BadRequest("Invalid or expired token.");
 
-    var user = resetEntry.User;
-    var result = await _userManager.RemovePasswordAsync(user);
-    if (!result.Succeeded)
-        return BadRequest("Failed to remove old password.");
+            var user = resetEntry.User;
 
-    result = await _userManager.AddPasswordAsync(user, model.NewPassword);
-    if (!result.Succeeded)
-        return BadRequest("Failed to set new password.");
+            // Remove old password (optional, only needed if no reset functionality is available)
+            var removeResult = await _userManager.RemovePasswordAsync(user);
+            if (!removeResult.Succeeded)
+                return BadRequest(removeResult.Errors);
 
-    _context.PasswordResetTokens.Remove(resetEntry);
-    await _context.SaveChangesAsync();
+            // Add new password
+            var addResult = await _userManager.AddPasswordAsync(user, model.NewPassword);
+            if (!addResult.Succeeded)
+                return BadRequest(addResult.Errors);
 
-    return Ok("Password has been reset.");
-}
+            // Mark token as used instead of deleting
+            resetEntry.IsUsed = true;
+            await _context.SaveChangesAsync();
 
+            return Ok("Password has been reset successfully.");
+        }
+
+
+
+        [HttpPost("resend-email-verification")]
+        public async Task<IActionResult> ResendEmailVerification([FromBody] EmailOnlyRequest model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null || user.EmailConfirmed)
+                return Ok("If your email is not verified, a new link will be sent."); // Prevent email enumeration
+
+            var token = GenerateSecureToken();
+            var tokenHash = HashToken(token);
+
+            _context.EmailVerificationTokens.Add(new EmailVerificationToken
+            {
+                TokenHash = tokenHash,
+                ExpiryTime = DateTime.UtcNow.AddHours(1),
+                UserId = user.Id
+            });
+
+            await _context.SaveChangesAsync();
+            await _emailService.SendAsync(user.Email, "Verify Your Email", $"Verification code: {token}");
+
+            return Ok("Verification email sent.");
+        }
+
+        [HttpPost("resend-phone-verification")]
+        public async Task<IActionResult> ResendPhoneVerification([FromBody] EmailOnlyRequest model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null || user.PhoneVerified)
+                return Ok("If your phone is not verified, a new OTP will be sent.");
+
+            var otp = new Random().Next(100000, 999999).ToString();
+            _context.PhoneVerificationTokens.Add(new PhoneVerificationToken
+            {
+                Token = otp,
+                ExpiryTime = DateTime.UtcNow.AddMinutes(5),
+                UserId = user.Id
+            });
+
+            await _context.SaveChangesAsync();
+            await _smsService.SendAsync(user.PhoneNumber, $"Your verification code is: {otp}");
+
+            return Ok("OTP sent to your phone.");
+        }
 
 
         [HttpPost("refresh-token")]
@@ -601,21 +710,29 @@ public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest m
         //     return Convert.ToBase64String(bytes);
         // }
         private string GenerateSecureToken()
-{
-    var bytes = new byte[64];
-    using var rng = RandomNumberGenerator.Create();
-    rng.GetBytes(bytes);
-    return Convert.ToBase64String(bytes);
-}
+        {
+            var bytes = new byte[64];
+            using var rng = RandomNumberGenerator.Create();
+            rng.GetBytes(bytes);
+            return Convert.ToBase64String(bytes);
+        }
 
+
+        // private string HashToken(string token)
+        // {
+        //     using var sha256 = SHA256.Create();
+        //     var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(token));
+        //     return Convert.ToBase64String(hash);
+        // }
 
         private string HashToken(string token)
         {
+            // Create a SHA256 hash of the input token and convert to Base64
             using var sha256 = SHA256.Create();
-            var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(token));
+            var bytes = Encoding.UTF8.GetBytes(token);
+            var hash = sha256.ComputeHash(bytes);
             return Convert.ToBase64String(hash);
         }
-
 
 
         private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
