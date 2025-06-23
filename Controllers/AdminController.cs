@@ -13,5 +13,18 @@ namespace AuthApi.Controllers
         {
             return Ok("Only Admins can see this");
         }
+
+        [HttpGet("admin-only")]
+        public IActionResult AdminEndpoint()
+        {
+            return Ok("This is protected and only accessible by Admins.");
+        }
+
+        [Authorize(Roles = "Admin,Manager")]
+        [HttpGet("admin-or-manager")]
+        public IActionResult AdminOrManagerEndpoint()
+        {
+            return Ok("This is for Admin or Manager roles.");
+        }
     }
 }

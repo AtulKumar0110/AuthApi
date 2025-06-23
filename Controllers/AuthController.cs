@@ -406,7 +406,8 @@ namespace AuthApi.Controllers
             if (user == null)
                 return BadRequest("User not found.");
 
-            user.PhoneVerified = true;
+            // ✅ Use built-in Identity property for confirmation
+            user.PhoneNumberConfirmed = true;
             entry.IsUsed = true;
 
             await _userManager.UpdateAsync(user);
@@ -414,7 +415,6 @@ namespace AuthApi.Controllers
 
             return Ok("Phone number verified successfully.");
         }
-
 
 
         [HttpPost("verify-phone-otp")]
@@ -573,6 +573,46 @@ namespace AuthApi.Controllers
             await _context.SaveChangesAsync();
 
             return Ok("Password has been reset successfully.");
+        }
+        [HttpPost("phone-login")]
+        public async Task<IActionResult> PhoneLogin([FromBody] VerifyPhoneOtpRequest model)
+        {
+            var otpHash = HashToken(model.Otp);
+
+            var entry = await _context.OtpEntries
+                .FirstOrDefaultAsync(o => o.PhoneNumber == model.PhoneNumber && o.OtpHash == otpHash && !o.IsUsed && o.ExpiryTime > DateTime.UtcNow);
+
+            if (entry == null)
+                return BadRequest("Invalid or expired OTP.");
+
+            var user = await _userManager.Users.FirstOrDefaultAsync(u => u.PhoneNumber == model.PhoneNumber);
+            if (user == null)
+                return Unauthorized("User not found.");
+
+            // Mark OTP as used
+            entry.IsUsed = true;
+            await _context.SaveChangesAsync();
+
+            // Generate JWT
+            var claims = await GetClaimsAsync(user);
+            var accessToken = GenerateAccessToken(claims);
+            var refreshToken = GenerateRefreshToken();
+            var hashedRefreshToken = HashToken(refreshToken);
+
+            _context.RefreshTokens.Add(new RefreshToken
+            {
+                TokenHash = hashedRefreshToken,
+                ExpiryTime = DateTime.UtcNow.AddDays(7),
+                UserId = user.Id
+            });
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new TokenModel
+            {
+                AccessToken = accessToken,
+                RefreshToken = refreshToken
+            });
         }
 
 

@@ -3,15 +3,32 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace AuthApi.Controllers
 {
-    [Authorize(Roles = "User")]
-    [Route("api/user")]
     [ApiController]
+    [Route("api/[controller]")]
     public class UserController : ControllerBase
     {
-        [HttpGet("profile")]
+        // Accessible to any authenticated user
+        [Authorize]
+        [HttpGet("me")]
         public IActionResult GetProfile()
         {
-            return Ok("This is user profile data");
+            return Ok("Hello, authenticated user!");
+        }
+
+        // Accessible only to users with the 'Admin' role
+        [Authorize(Roles = "Admin")]
+        [HttpGet("admin-only")]
+        public IActionResult AdminOnly()
+        {
+            return Ok("Hello, Admin!");
+        }
+
+        // Accessible to Admin or Manager
+        [Authorize(Roles = "Admin,Manager")]
+        [HttpGet("admin-or-manager")]
+        public IActionResult AdminOrManager()
+        {
+            return Ok("Hello, Admin or Manager!");
         }
     }
 }

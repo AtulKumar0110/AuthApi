@@ -5,17 +5,17 @@ using AuthApi.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
-using AuthApi.Services; // ✅ For EmailService & SmsService
+using AuthApi.Services; // For EmailService & SmsService
 using Microsoft.Extensions.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ✅ Enable console and debug logging (optional, for dev use)
+// ✅ Enable console and debug logging
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
-// Add services to the container
+// ✅ Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -33,11 +33,9 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddDefaultTokenProviders();
 
-// ✅ Register EmailService with ILogger support
+// ✅ Register EmailService and SmsService
 builder.Services.AddScoped<IEmailService, EmailService>();
-
-// ✅ Register SmsService
-builder.Services.AddScoped<ISmsService, SmsService>(); // <-- 📌 ADD THIS LINE
+builder.Services.AddScoped<ISmsService, SmsService>();
 
 // ✅ Add JWT Authentication
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -70,6 +68,21 @@ builder.Services.AddHostedService<TokenCleanupService>();
 
 var app = builder.Build();
 
+// ✅ Seed roles at startup
+using (var scope = app.Services.CreateScope())
+{
+    var services = scope.ServiceProvider;
+    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+
+    string[] roleNames = { "Admin", "User", "Manager" };
+
+    foreach (var role in roleNames)
+    {
+        if (!await roleManager.RoleExistsAsync(role))
+            await roleManager.CreateAsync(new IdentityRole(role));
+    }
+}
+
 // ✅ Configure middleware
 if (app.Environment.IsDevelopment())
 {
@@ -78,7 +91,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
 app.UseAuthentication();
 app.UseAuthorization();
 
