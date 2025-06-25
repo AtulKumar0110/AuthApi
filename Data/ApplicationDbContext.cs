@@ -16,8 +16,8 @@ namespace AuthApi.Data // Your actual namespace
         public DbSet<PasswordResetToken> PasswordResetTokens { get; set; }
         public DbSet<PhoneVerificationToken> PhoneVerificationTokens { get; set; }
         public DbSet<OtpEntry> OtpEntries { get; set; }
+        public DbSet<CustomToken> CustomTokens { get; set; }
 
-      
 
 
         protected override void OnModelCreating(ModelBuilder builder)

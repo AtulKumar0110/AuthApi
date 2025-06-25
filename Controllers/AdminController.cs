@@ -12,7 +12,7 @@ namespace AuthApi.Controllers
         public IActionResult GetAllUsers()
         {
             return Ok("Only Admins can see this");
-        }
+        }   
 
         [HttpGet("admin-only")]
         public IActionResult AdminEndpoint()

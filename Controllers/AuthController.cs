@@ -640,6 +640,46 @@ namespace AuthApi.Controllers
             return Ok("Verification email sent.");
         }
 
+
+        [HttpPost("confirm-email-token")]
+        public async Task<IActionResult> ConfirmEmailWithToken([FromBody] ConfirmEmailTokenRequest model)
+        {
+            var tokenHash = HashToken(model.Token);
+            var entry = await _context.EmailVerificationTokens
+                .Include(e => e.User)
+                .FirstOrDefaultAsync(e => e.TokenHash == tokenHash && e.ExpiryTime > DateTime.UtcNow);
+
+            if (entry == null)
+                return BadRequest("Invalid or expired token.");
+
+            var user = entry.User;
+            if (user == null)
+                return BadRequest("User not found.");
+
+            user.EmailConfirmed = true;
+            _context.EmailVerificationTokens.Remove(entry); // Clean up used token
+
+            await _userManager.UpdateAsync(user);
+            await _context.SaveChangesAsync();
+
+            return Ok("Email verified successfully.");
+        }
+
+        [HttpGet("confirm-email")]
+        public async Task<IActionResult> ConfirmEmail(string userId, string token)
+        {
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null) return BadRequest("Invalid user.");
+
+            var result = await _userManager.ConfirmEmailAsync(user, token);
+            if (result.Succeeded)
+                return Ok("Email confirmed successfully.");
+
+            return BadRequest("Failed to confirm email.");
+        }
+
+
+
         [HttpPost("resend-phone-verification")]
         public async Task<IActionResult> ResendPhoneVerification([FromBody] EmailOnlyRequest model)
         {
@@ -773,7 +813,10 @@ namespace AuthApi.Controllers
             var hash = sha256.ComputeHash(bytes);
             return Convert.ToBase64String(hash);
         }
-
+        private string GenerateRandomToken()
+        {
+            return Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+        }
 
         private ClaimsPrincipal GetPrincipalFromExpiredToken(string token)
         {
