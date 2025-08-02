@@ -40,17 +40,25 @@ public class JwtUtil {
     }
 
     public List<String> extractRoles(String token) {
-        Claims claims = extractAllClaims(token);
-        return claims.get("roles", List.class);
+        try {
+            Claims claims = extractAllClaims(token);
+            return claims.get("roles", List.class);
+        } catch (Exception e) {
+            return Collections.emptyList(); // Safe fallback
+        }
     }
 
     public boolean isTokenValid(String token) {
         try {
-            extractAllClaims(token);
-            return true;
-        } catch (JwtException e) {
+            Claims claims = extractAllClaims(token);
+            return !isTokenExpired(claims);
+        } catch (JwtException | IllegalArgumentException e) {
             return false;
         }
+    }
+
+    private boolean isTokenExpired(Claims claims) {
+        return claims.getExpiration().before(new Date());
     }
 
     private <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
