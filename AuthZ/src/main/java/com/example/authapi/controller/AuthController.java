@@ -49,7 +49,7 @@ public class AuthController {
 
         userRepository.save(newUser);
 
-        // Generate verification token and send email
+        // Generate verification token
         String token = UUID.randomUUID().toString();
         String tokenHash = TokenUtils.hashToken(token);
 
@@ -59,9 +59,11 @@ public class AuthController {
         verificationToken.setExpiryTime(LocalDateTime.now().plusHours(1));
 
         emailVerificationTokenRepository.save(verificationToken);
+
+        // Send verification email
         emailService.sendVerificationEmail(newUser.getUsername(), token);
 
-        return ResponseEntity.ok("User registered successfully. Verification email sent.");
+        return ResponseEntity.ok("User registered successfully. Please check your email to verify your account.");
     }
 
     // ✅ Authenticate user and issue JWT
@@ -92,12 +94,13 @@ public class AuthController {
     @PostMapping("/resend-verification")
     public ResponseEntity<?> resendEmailVerification(@RequestBody Map<String, String> request) {
         String email = request.get("email");
-
         User user = userRepository.findByUsername(email).orElse(null);
 
         if (user == null || user.isEmailVerified()) {
             return ResponseEntity.ok("If your email is not verified, a new link will be sent.");
         }
+
+        emailVerificationTokenRepository.deleteByUser(user); // remove old token
 
         String token = UUID.randomUUID().toString();
         String tokenHash = TokenUtils.hashToken(token);
@@ -113,31 +116,26 @@ public class AuthController {
         return ResponseEntity.ok("Verification email sent.");
     }
 
-    // ✅ Verify Email Endpoint
+    // ✅ Verify Email
     @GetMapping("/verify-email")
     public ResponseEntity<?> verifyEmail(@RequestParam("token") String token) {
         String tokenHash = TokenUtils.hashToken(token);
 
-        Optional<EmailVerificationToken> optionalToken =
-                emailVerificationTokenRepository.findByTokenHashAndIsUsedFalse(tokenHash);
+        EmailVerificationToken verificationToken = emailVerificationTokenRepository
+                .findByTokenHashAndUsedFalseAndExpiryTimeAfter(tokenHash, LocalDateTime.now())
+                .orElse(null);
 
-        if (optionalToken.isEmpty()) {
+        if (verificationToken == null) {
             return ResponseEntity.badRequest().body("Invalid or expired token.");
-        }
-
-        EmailVerificationToken verificationToken = optionalToken.get();
-
-        if (verificationToken.getExpiryTime().isBefore(LocalDateTime.now())) {
-            return ResponseEntity.badRequest().body("Token has expired.");
         }
 
         User user = verificationToken.getUser();
         user.setEmailVerified(true);
         userRepository.save(user);
 
-        verificationToken.setIsUsed(true);
+        verificationToken.setUsed(true);
         emailVerificationTokenRepository.save(verificationToken);
 
-        return ResponseEntity.ok("Email verified successfully.");
+        return ResponseEntity.ok("Email verified successfully. You can now log in.");
     }
 }
